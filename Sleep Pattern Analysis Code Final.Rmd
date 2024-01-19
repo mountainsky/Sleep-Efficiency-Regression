@@ -1,0 +1,571 @@
+---
+title: "Sleep Efficiency Regression Analysis"
+author: "Graeme Ko"
+date: "2023-12-05"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(leaps)
+library(GGally)
+library(olsrr)
+library(lmtest)
+library(car)
+library(dplyr)
+library(leaps)
+library(MASS)
+```
+
+```{r}
+df = read.csv('Sleep_Efficiency.csv')
+head(df)
+```
+### Reformatting Bedtime and Wakeup.time, removing duplicates, removing NAs
+
+```{r}
+df = na.omit(df)
+
+# check for duplicates
+df[duplicated(df)]
+
+# change format of columns
+df$Bedtime <- as.POSIXct(df$Bedtime, format = "%Y-%m-%d %H:%M")
+df$Wakeup.time <- as.POSIXct(df$Wakeup.time, format = "%Y-%m-%d %H:%M")
+
+# Extract only the time part
+df$Bedtime <- format(df$Bedtime, format = "%H:%M")
+df$Wakeup.time <- format(df$Wakeup.time, format = "%H:%M")
+df$Sleep.duration <- as.integer(df$Sleep.duration)
+
+convert_time_to_numeric <- function(time_str) {
+  if (is.na(time_str)) {
+    return(NA)  # Return NA for missing values
+  }
+  
+  time <- as.POSIXct(time_str, format = "%H:%M")
+  hours <- as.numeric(format(time, "%H"))
+  minutes <- as.numeric(format(time, "%M"))
+  
+  total_hours <- hours + minutes / 60  # Convert minutes to hours
+  
+  if (format(time, "%p") == "PM") {
+    total_hours <- 12 - total_hours    # Subtract 12 hours for PM times
+  }
+  
+  return(total_hours)
+}
+
+# Apply the function to Bedtime and Wakeup.time
+df$Bedtime <- sapply(df$Bedtime, convert_time_to_numeric)
+df$Wakeup.time <- sapply(df$Wakeup.time, convert_time_to_numeric)
+str(df)
+```
+```{r}
+
+head(df,100)
+```
+
+
+### Initial model
+
+```{r}
+mod1 = lm(Sleep.efficiency~Age+Gender+Bedtime+Wakeup.time+Sleep.duration+REM.sleep.percentage+Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+Smoking.status+Exercise.frequency, data=df)
+summary(mod1)
+```
+### Checking multicollinearity
+
+```{r}
+vif(mod1)
+```
+
+### Removing Wakeup.time to due to multicollinearity - the data is accounted for by Bedtime and Sleep.duration
+
+```{r}
+sleeppercdata <- subset(df, select=c("REM.sleep.percentage","Deep.sleep.percentage","Light.sleep.percentage"))
+
+sleeptimedata <- subset(df, select=c("Bedtime","Wakeup.time"))
+```
+
+
+### Checking correlation between columns which produced errors due to aliasing in the linear model
+
+```{r}
+ggpairs(sleeppercdata,lower = list(continuous = "smooth_loess", combo =
+"facethist", discrete = "facetbar", na = "na"))
+```
+
+### Checking correlation between variables with multicollinearity
+
+```{r}
+ggpairs(sleeptimedata,lower = list(continuous = "smooth_loess", combo =
+"facethist", discrete = "facetbar", na = "na"))
+```
+
+### Re-estimating model adjusted for multicollinearity
+
+```{r}
+basemod = lm(Sleep.efficiency~Age+factor(Gender)+Bedtime+Sleep.duration+REM.sleep.percentage+ Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency,data=df)
+
+summary(basemod)
+```
+
+### Conducting best subset method for finding significant variables
+
+```{r}
+best.subset<- regsubsets(Sleep.efficiency~Age+factor(Gender)+Bedtime+Sleep.duration+REM.sleep.percentage+ Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency, data = df, nv=11)
+```
+
+### Summary of best subset model
+
+```{r}
+reg.summary <- summary(best.subset)
+summary(best.subset)
+```
+```{r}
+rsquare<-c(reg.summary$rsq)
+cp<-c(reg.summary$cp)
+AdjustedR<-c(reg.summary$adjr2)
+RMSE<-c(reg.summary$rss)
+BIC<-c(reg.summary$bic)
+cbind(rsquare,cp,BIC,RMSE,AdjustedR)
+```
+
+
+```{r}
+par(mfrow=c(3,2)) # split the plotting panel into a 3 x 2 grid
+plot(reg.summary$cp,type = "o",pch=10, xlab="Number of Variables",ylab= "Cp")
+plot(reg.summary$bic,type = "o",pch=10, xlab="Number of Variables",ylab= "BIC")
+plot(reg.summary$rsq,type = "o",pch=10, xlab="Number of Variables",ylab= "Rˆ2")
+plot(reg.summary$rss,type = "o",pch=10, xlab="Number of Variables",ylab= "RMSE")
+plot(reg.summary$adjr2,type = "o",pch=10, xlab="Number of Variables",ylab= "Adjusted Rˆ2")
+```
+
+
+### Conducting stepwise method to compare to best subset method
+
+```{r}
+ks=ols_step_best_subset(basemod, details=TRUE)
+# for the output interpretation
+AdjustedR<-c(ks$adjr)
+cp<-c(ks$cp)
+AIC<-c(ks$aic)
+cbind(AdjustedR,cp,AIC)
+```
+
+```{r}
+par(mfrow=c(2,2)) # split the plotting panel into a 2 x 2 grid
+plot(ks$cp,type = "o",pch=10, xlab="Number of Variables",ylab= "Cp")
+plot(ks$aic,type = "o",pch=10, xlab="Number of Variables",ylab= "AIC")
+plot(ks$adjr,type = "o",pch=10, xlab="Number of Variables",ylab= "Adjusted Rˆ2")
+```
+
+### We will choose 8 and 11 variable models to compare for the final model.
+### The 8-variable model is chosen based on the high adjusted R-squared and low CP
+### The 11-variable model is chosen based on the CP being equal to p+1 where p is the number of predictors. This implies low bias even though the CP value is not as low.
+
+```{r}
+vars <- c(ks$predictors)
+vars
+```
+
+
+## Evaluating the 11-variable model:
+
+### Testing interaction terms for the 11-variable model
+
+```{r}
+intmod <- lm(Sleep.efficiency~(Age+factor(Gender)+Bedtime+Sleep.duration+REM.sleep.percentage+ Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency)^2,data=df)
+
+summary(intmod)
+```
+
+```{r}
+intmod <- lm(Sleep.efficiency~Age+factor(Gender)+Bedtime+Sleep.duration+REM.sleep.percentage+ Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency+ Age*factor(Smoking.status)+Age*Deep.sleep.percentage+Age*Awakenings+Age:factor(Smoking.status)+factor(Gender):Alcohol.consumption+Sleep.duration:Alcohol.consumption+REM.sleep.percentage:Alcohol.consumption+Deep.sleep.percentage:Awakenings+Deep.sleep.percentage:Caffeine.consumption+Deep.sleep.percentage:factor(Smoking.status)+Awakenings:Alcohol.consumption+Awakenings:factor(Smoking.status)+Awakenings:Exercise.frequency+Caffeine.consumption:Alcohol.consumption+Alcohol.consumption:Exercise.frequency,data=df)
+
+summary(intmod)
+```
+```{r}
+intmod <- lm(Sleep.efficiency~Age+factor(Gender)+Bedtime+Sleep.duration+REM.sleep.percentage+ Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency+ Age*factor(Smoking.status)+Age*Deep.sleep.percentage+Age*Awakenings+Age:factor(Smoking.status)+factor(Gender):Alcohol.consumption+Sleep.duration:Alcohol.consumption+REM.sleep.percentage:Alcohol.consumption+Deep.sleep.percentage:Awakenings+Deep.sleep.percentage:factor(Smoking.status)+Awakenings:Alcohol.consumption+Awakenings:factor(Smoking.status)+Awakenings:Exercise.frequency+Alcohol.consumption:Exercise.frequency,data=df)
+
+summary(intmod)
+```
+
+### Splitting data to prepare for pairs plots
+
+```{r}
+half1data <- subset(df, select=c("Sleep.efficiency","Sleep.duration","REM.sleep.percentage","Deep.sleep.percentage"))
+```
+```{r}
+half2data <- subset(df, select=c("Sleep.efficiency","Age","Bedtime","Exercise.frequency"))
+```
+
+```{r}
+half3data <- subset(df, select=c("Sleep.efficiency","Caffeine.consumption","Alcohol.consumption","Awakenings"))
+```
+
+```{r}
+agedata <- subset(df, select=c("Sleep.efficiency","Age"))
+```
+
+```{r}
+ggpairs(half1data,lower = list(continuous = "smooth_loess", combo =
+ "facethist", discrete = "facetbar", na = "na"))
+```
+
+```{r}
+ggpairs(half2data,lower = list(continuous = "smooth_loess", combo =
+ "facethist", discrete = "facetbar", na = "na"))
+```
+
+```{r}
+ggpairs(half3data,lower = list(continuous = "smooth_loess", combo =
+ "facethist", discrete = "facetbar", na = "na"))
+```
+```{r}
+ggpairs(agedata,lower = list(continuous = "smooth_loess", combo =
+ "facethist", discrete = "facetbar", na = "na"))
+```
+
+```{r}
+elevenpowertry <- lm(Sleep.efficiency~Age+factor(Gender)+Bedtime+Sleep.duration+REM.sleep.percentage+ Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency+ Age*factor(Smoking.status)+Age*Deep.sleep.percentage+Age*Awakenings+Age:factor(Smoking.status)+factor(Gender):Alcohol.consumption+Sleep.duration:Alcohol.consumption+REM.sleep.percentage:Alcohol.consumption+Deep.sleep.percentage:Awakenings+Deep.sleep.percentage:factor(Smoking.status)+Awakenings:Alcohol.consumption+Awakenings:factor(Smoking.status)+Awakenings:Exercise.frequency+Alcohol.consumption:Exercise.frequency+I(Age^2),data=df)
+
+summary(elevenpowertry)
+```
+### Not significant - We will not use higher order terms
+
+### Based on the patterns in the plot above, we added in a squared term for Deep.sleep.percentage.
+
+
+
+## Evaluating the 8-variable model
+
+```{r}
+eightvar <- lm(Sleep.efficiency~Age+REM.sleep.percentage+Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency,data=df)
+summary(eightvar)
+```
+```{r}
+eightint <- lm(Sleep.efficiency~(Age+REM.sleep.percentage+Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency)^2,data=df)
+summary(eightint)
+```
+```{r}
+eightint <- lm(Sleep.efficiency~(Age+REM.sleep.percentage+Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency+Age:factor(Smoking.status)+REM.sleep.percentage:factor(Smoking.status)+Deep.sleep.percentage:Awakenings+Deep.sleep.percentage:factor(Smoking.status)+Awakenings:Alcohol.consumption+Awakenings:factor(Smoking.status)+Alcohol.consumption:Exercise.frequency),data=df)
+summary(eightint)
+```
+
+```{r}
+eightint <- lm(Sleep.efficiency~(Age+REM.sleep.percentage+Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency+Age:factor(Smoking.status)+Deep.sleep.percentage:Awakenings+Deep.sleep.percentage:factor(Smoking.status)+Awakenings:Alcohol.consumption+Alcohol.consumption:Exercise.frequency),data=df)
+summary(eightint)
+```
+
+```{r}
+eightpow <- lm(Sleep.efficiency~Age+REM.sleep.percentage+Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency+Age:factor(Smoking.status)+Deep.sleep.percentage:Awakenings+Deep.sleep.percentage:factor(Smoking.status)+Awakenings:Alcohol.consumption+Alcohol.consumption:Exercise.frequency+I(Age^2),data=df)
+summary(eightpow)
+```
+
+
+```{r}
+eightpow <- lm(Sleep.efficiency~Age+REM.sleep.percentage+Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency+Age:factor(Smoking.status)+Deep.sleep.percentage:Awakenings+Deep.sleep.percentage:factor(Smoking.status)+Awakenings:Alcohol.consumption+Alcohol.consumption:Exercise.frequency+I(Age^2)+I(Age^3),data=df)
+summary(eightpow)
+```
+### In the end, we will only choose the Age^2 higher order term for this model as it appears possibly non-linear in the scatterplot and is significant in the model. Trying Age^3 in our model did not work
+
+### We will conduct tests on our final 8-variable model
+
+```{r}
+finalmodel_8 <- lm(Sleep.efficiency~Age+REM.sleep.percentage+Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency+Age:factor(Smoking.status)+Deep.sleep.percentage:Awakenings+Deep.sleep.percentage:factor(Smoking.status)+Awakenings:Alcohol.consumption+Alcohol.consumption:Exercise.frequency+I(Age^2),data=df)
+summary(finalmodel_8)
+```
+
+```{r}
+df[cooks.distance(finalmodel_8)>1,] 
+```
+No points outside a cook's distance of 1 found.
+
+```{r}
+plot(finalmodel_8,pch=18,col="red",which=c(4))
+```
+
+```{r}
+plot(finalmodel_8,which=5)
+```
+
+```{r}
+lev=hatvalues(finalmodel_8)
+p = length(coef(finalmodel_8))
+n = nrow(df)
+outlier3p = lev[lev>(3*p/n)]
+print(outlier3p)
+```
+
+```{r}
+outi <- c(82,258,303,379,425)
+df_new = df[-outi,]
+```
+
+
+```{r}
+finalmodel_8 <- lm(Sleep.efficiency~Age+REM.sleep.percentage+Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency+Age:factor(Smoking.status)+Deep.sleep.percentage:Awakenings+Deep.sleep.percentage:factor(Smoking.status)+Awakenings:Alcohol.consumption+Alcohol.consumption:Exercise.frequency+I(Age^2),data=df_new)
+summary(finalmodel_8)
+```
+```{r}
+shapiro.test(residuals(finalmodel_8))
+```
+
+We do not reject the null hypothesis that the data is normally distributed. The normality condition is satisfied.
+
+```{r}
+bptest(finalmodel_8)
+```
+
+Reject the null hypothesis that the data is homoskedastistic. The homoskedasticity condition is not satisfied.
+
+```{r}
+ggplot(finalmodel_8, aes(x=.fitted, y=.resid)) +
+geom_point() + geom_smooth()+
+geom_hline(yintercept = 0)
+```
+
+There does not appear to be a discernible pattern in the residual plot.
+
+```{r}
+ggplot(data=df_new, aes(residuals(finalmodel_8))) +
+geom_histogram(color='red',fill='blue') +
+labs(title="Histogram for residuals") +
+labs(x="residuals", y="Count")
+```
+```{r}
+ggplot(df_new, aes(sample=finalmodel_8$residuals)) +
+stat_qq() +
+stat_qq_line() +
+ggtitle("Q-Q normality plot")
+```
+
+To adjust for the heteroskedasticity and normality, we will perform a Box-Cox transformation on the 8-variable model
+
+```{r}
+bc = boxcox(finalmodel_8, lambda=seq(-5,5))
+```
+
+```{r}
+bestlambda=bc$x[which(bc$y==max(bc$y))]
+bestlambda
+```
+
+```{r}
+bcmodel=lm((((Sleep.efficiency^bestlambda)-1)/bestlambda)~Age+REM.sleep.percentage+Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency+Age:factor(Smoking.status)+Deep.sleep.percentage:Awakenings+Deep.sleep.percentage:factor(Smoking.status)+Awakenings:Alcohol.consumption+Alcohol.consumption:Exercise.frequency+I(Age^2),data=df_new)
+summary(bcmodel)
+```
+
+```{r}
+shapiro.test(residuals(bcmodel))
+```
+
+We still cannot reject the null hypothesis and the normality condition is satisfied
+# ADD HYPOTHESIS
+```{r}
+bptest(bcmodel)
+```
+
+We still reject the null hypothesis and the homoskedasticity condition is still not satisfied.
+
+
+```{r}
+ggplot(df_new, aes(sample=bcmodel$residuals)) +
+stat_qq() +
+stat_qq_line() +
+ggtitle("Q-Q normality plot")
+```
+
+
+```{r}
+ggplot(data=df_new, aes(residuals(bcmodel))) +
+geom_histogram(color='red',fill='blue') +
+labs(title="Histogram for residuals") +
+labs(x="residuals", y="Count")
+```
+```{r}
+ggplot(bcmodel, aes(x=.fitted, y=.resid)) +
+geom_point() + geom_smooth()+
+geom_hline(yintercept = 0)
+```
+
+## Evaluating the 11-variable model
+
+```{r}
+finalelevenmod <- lm(Sleep.efficiency~Age+factor(Gender)+Bedtime+Sleep.duration+REM.sleep.percentage+ Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency+ Age*factor(Smoking.status)+Age*Deep.sleep.percentage+Age*Awakenings+Age:factor(Smoking.status)+factor(Gender):Alcohol.consumption+Sleep.duration:Alcohol.consumption+REM.sleep.percentage:Alcohol.consumption+Deep.sleep.percentage:Awakenings+Deep.sleep.percentage:factor(Smoking.status)+Awakenings:Alcohol.consumption+Awakenings:factor(Smoking.status)+Awakenings:Exercise.frequency+Alcohol.consumption:Exercise.frequency,data=df)
+
+summary(finalelevenmod)
+```
+
+
+```{r}
+df[cooks.distance(finalelevenmod)>1,] 
+```
+No points outside a cook's distance of 1 found.
+
+```{r}
+plot(finalelevenmod,pch=18,col="red",which=c(4))
+```
+
+```{r}
+plot(finalelevenmod,which=5)
+```
+
+
+```{r}
+lev=hatvalues(finalelevenmod)
+p = length(coef(finalelevenmod))
+n = nrow(df)
+outlier3p = lev[lev>(3*p/n)]
+print(outlier3p)
+```
+
+```{r}
+outi <- c(258,336,379)
+df_new = df[-outi,]
+```
+
+### Building the model again without the outliers
+```{r}
+finalelevenmod <- lm(Sleep.efficiency~Age+factor(Gender)+Bedtime+Sleep.duration+REM.sleep.percentage+ Deep.sleep.percentage+Awakenings+Caffeine.consumption+Alcohol.consumption+factor(Smoking.status)+Exercise.frequency+ Age*factor(Smoking.status)+Age*Deep.sleep.percentage+Age*Awakenings+Age:factor(Smoking.status)+factor(Gender):Alcohol.consumption+Sleep.duration:Alcohol.consumption+REM.sleep.percentage:Alcohol.consumption+Deep.sleep.percentage:Awakenings+Deep.sleep.percentage:factor(Smoking.status)+Awakenings:Alcohol.consumption+Awakenings:factor(Smoking.status)+Awakenings:Exercise.frequency+Alcohol.consumption:Exercise.frequency,data=df_new)
+
+summary(finalelevenmod)
+```
+
+```{r}
+shapiro.test(residuals(finalelevenmod))
+```
+
+Fail to reject. The normality condition is satisfied.
+
+```{r}
+bptest(finalelevenmod)
+```
+
+Fail to reject. The homoskedasticity condition is satisfied.
+
+
+```{r}
+ggplot(finalelevenmod, aes(x=.fitted, y=.resid)) +
+geom_point() + geom_smooth()+
+geom_hline(yintercept = 0)
+```
+
+```{r}
+ggplot(data=df_new, aes(residuals(finalelevenmod))) +
+geom_histogram(color='red',fill='blue') +
+labs(title="Histogram for residuals") +
+labs(x="residuals", y="Count")
+```
+
+```{r}
+ggplot(df_new, aes(sample=finalelevenmod$residuals)) +
+stat_qq() +
+stat_qq_line() +
+ggtitle("Q-Q normality plot")
+```
+
+
+Our final model is the 11-variable model.
+
+```{r}
+summary(finalelevenmod)
+``` 
+
+
+# Prediction
+
+We thought it would be interesting to evaluate our model against one of our own group member's sleep data. Luckily, we had historical sleep data on Graeme's sleep which contained all the variables used in the model. 
+
+```{r}
+my_eff = (7+(10/60)) / (9+(50/60))
+my_age = 21
+my_gend = "Male"
+my_btime = convert_time_to_numeric(as.POSIXct("2021-04-02 1:24", format = "%Y-%m-%d %H:%M"))
+my_dur = 8.25
+my_REM = ((12.5+17.5+13.5+30+5+10)/60) / my_dur * 100
+my_deep = 40
+my_awake = 4
+my_caff = 0
+my_alcohol = 0
+my_smoke = "No"
+my_exer = 1
+
+my_df = data.frame(Sleep.efficiency=my_eff,Age=my_age,Gender=my_gend,Bedtime=my_btime,Sleep.duration=my_dur,REM.sleep.percentage=my_REM,Deep.sleep.percentage=my_deep,Awakenings=my_awake,Caffeine.consumption=my_caff,Alcohol.consumption=my_alcohol,Smoking.status=my_smoke,Exercise.frequency=my_exer)
+
+head(my_df)
+```
+
+```{r}
+my_eff_perc = my_eff*100
+my_eff_output <- paste("Actual sleep efficiency for Graeme:", 
+                       sprintf("%.2f%%", my_eff_perc),"efficiency")
+print(my_eff_output)
+```
+
+```{r}
+prediction <- predict(finalelevenmod,my_df,interval="predict")
+eff_output <- paste("Model predicted sleep efficiency for Graeme:",
+                      sprintf("%.2f%%", prediction[,1]*100),"efficiency")
+
+inteff_output <- paste("With 95% prediction interval between","(",
+                       sprintf("%.2f%%", prediction[,2]*100),",",
+                       sprintf("%.2f%%", prediction[,3]*100),")")
+
+print(eff_output)
+print(inteff_output)
+```
+
+We can see that Graeme's actual sleep efficiency of 72.88% is within the 95% prediction interval estimated by the model. Though much more data would be required for further model validation. 
+
+
+A more recent night of sleep was also recorded, displayed in the dataframe below. 
+
+```{r}
+my_eff = 0.68
+my_age = 23
+my_gend = "Male"
+my_btime = convert_time_to_numeric(as.POSIXct("2023-12-08 1:48", format = "%Y-%m-%d %H:%M"))
+my_dur = 4.417
+my_REM = (38/60) / my_dur * 100
+my_deep = 25
+my_awake = 7
+my_caff = 0
+my_alcohol = 9
+my_smoke = "No"
+my_exer = 0
+
+my_df = data.frame(Sleep.efficiency=my_eff,Age=my_age,Gender=my_gend,Bedtime=my_btime,Sleep.duration=my_dur,REM.sleep.percentage=my_REM,Deep.sleep.percentage=my_deep,Awakenings=my_awake,Caffeine.consumption=my_caff,Alcohol.consumption=my_alcohol,Smoking.status=my_smoke,Exercise.frequency=my_exer)
+
+head(my_df)
+```
+```{r}
+my_eff_perc = my_eff*100
+my_eff_output <- paste("Actual sleep efficiency for Graeme:", 
+                       sprintf("%.2f%%", my_eff_perc),"efficiency")
+print(my_eff_output)
+```
+
+```{r}
+prediction <- predict(finalelevenmod,my_df,interval="predict")
+eff_output <- paste("Model predicted sleep efficiency for Graeme:",
+                      sprintf("%.2f%%", prediction[,1]*100),"efficiency")
+
+inteff_output <- paste("With 95% prediction interval between","(",
+                       sprintf("%.2f%%", prediction[,2]*100),",",
+                       sprintf("%.2f%%", prediction[,3]*100),")")
+
+print(eff_output)
+print(inteff_output)
+```
+
+Here we tried a more recent night of sleep that was somewhat more irregular given the larger alcohol content, frequent awakenings, and short duration. The actual efficiency prediction from our model was less than 2% different from the measured value, though the 95% confidence interval for this test was fairly large as well. 
+
+
